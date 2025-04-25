@@ -1,0 +1,180 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import numpy as np
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import KFold
+import random
+
+# Set seeds for reproducibility
+torch.manual_seed(42)
+random.seed(42)
+np.random.seed(42)
+
+# Generate more realistic data with noise
+def generate_realistic_data(n_samples=100):
+    data = []
+    for _ in range(n_samples):
+        # Add slight randomness to make data more human-like
+        hours = random.uniform(0, 10)
+        # Students tend to have clustered attendance patterns
+        attendance = min(1.0, max(0.0, random.gauss(0.7, 0.2)))
+        # Grades often follow a bell curve
+        prev_grade = min(100, max(0, random.gauss(65, 15)))
+        
+        # Complex passing criteria
+        pass_threshold = 60 - (hours * 3) - (attendance * 20)
+        passing = 1 if prev_grade > pass_threshold else 0
+        
+        # Add some noise to make it less deterministic
+        if random.random() < 0.1:  # 10% chance to flip the outcome
+            passing = 1 - passing
+            
+        data.append(([hours, attendance, prev_grade], passing))
+    return data
+
+# Generate and prepare data
+data = generate_realistic_data()
+X = torch.tensor([x for x, _ in data], dtype=torch.float32)
+y = torch.tensor([y for _, y in data], dtype=torch.float32).unsqueeze(1)
+
+# Normalize data
+scaler = StandardScaler()
+X = torch.tensor(scaler.fit_transform(X), dtype=torch.float32)
+
+# Simple feedforward network
+class StudentPerformancePredictor(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.network = nn.Sequential(
+            nn.Linear(3, 16),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(16, 8),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(8, 1),
+            nn.Sigmoid()
+        )
+    
+    def forward(self, x):
+        return self.network(x)
+
+# Training parameters
+n_splits = 5
+n_epochs = 100
+batch_size = 16
+learning_rate = 0.01
+
+# K-fold cross validation
+kfold = KFold(n_splits=n_splits, shuffle=True)
+fold_results = []
+
+for fold, (train_ids, val_ids) in enumerate(kfold.split(X)):
+    model = StudentPerformancePredictor()
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5)
+    criterion = nn.BCELoss()
+    
+    best_val_loss = float('inf')
+    patience = 10
+    patience_counter = 0
+    
+    # Training loop
+    for epoch in range(n_epochs):
+        model.train()
+        # Add random noise to inputs during training
+        X_train = X[train_ids] + torch.randn_like(X[train_ids]) * 0.01
+        y_pred = model(X_train)
+        loss = criterion(y_pred, y[train_ids])
+        
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        
+        # Validation
+        model.eval()
+        with torch.no_grad():
+            val_pred = model(X[val_ids])
+            val_loss = criterion(val_pred, y[val_ids])
+            scheduler.step(val_loss)
+            
+            # Early stopping
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                
+            if patience_counter >= patience:
+                break
+                
+    fold_results.append(best_val_loss.item())
+
+print(f"Average validation loss across folds: {np.mean(fold_results):.4f}")
+
+# Function to predict with some randomness
+def predict_with_uncertainty(model, x, n_samples=10):
+    model.eval()
+    predictions = []
+    x = torch.tensor(scaler.transform([x]), dtype=torch.float32)
+    
+    for _ in range(n_samples):
+        # Add small random noise
+        x_noise = x + torch.randn_like(x) * 0.01
+        with torch.no_grad():
+            pred = model(x_noise)
+            predictions.append(pred.item())
+    
+    # Return mean prediction and uncertainty
+    return np.mean(predictions), np.std(predictions)6
+
+def predict_student_outcome(hours, attendance, prev_grade, model):
+    # Prepare input data
+    input_data = [[hours, attendance, prev_grade]]
+    input_tensor = torch.tensor(scaler.transform(input_data), dtype=torch.float32)
+    
+    # Get prediction with uncertainty
+    model.eval()
+    with torch.no_grad():
+        prediction = model(input_tensor)
+        probability = prediction.item()
+    
+    # Determine outcome
+    is_pass = probability >= 0.5
+    result = "PASS" if is_pass else "FAIL"
+    confidence = max(probability, 1 - probability) * 100
+    
+    return result, confidence
+
+def main():
+    # Generate data and train model
+    data = generate_realistic_data(1000)  # Increased sample size
+    X = torch.tensor([x for x, _ in data], dtype=torch.float32)
+    y = torch.tensor([y for _, y in data], dtype=torch.float32).unsqueeze(1)
+    
+    # Train model (using existing code)
+    model = StudentPerformancePredictor()
+    # ... training code ...
+    
+    # Example usage
+    while True:
+        try:
+            hours = float(input("Enter study hours (0-10): "))
+            attendance = float(input("Enter attendance rate (0-1): "))
+            prev_grade = float(input("Enter previous grade (0-100): "))
+            
+            result, confidence = predict_student_outcome(hours, attendance, prev_grade, model)
+            print(f"\nPrediction: {result}")
+            print(f"Confidence: {confidence:.1f}%\n")
+            
+            another = input("Predict another? (y/n): ")
+            if another.lower() != 'y':
+                break
+                
+        except ValueError:
+            print("Please enter valid numbers.")
+            continue
+
+if __name__ == "__main__":
+    main()
